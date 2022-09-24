@@ -13,6 +13,8 @@ class Reaction < ApplicationRecord
 
   # These are categories of reactions that administrators can select
   PRIVILEGED_CATEGORIES = %w[thumbsup thumbsdown vomit].freeze
+  NEGATIVE_PRIVILEGED_CATEGORIES = %w[thumbsdown vomit].freeze
+
   REACTABLE_TYPES = %w[Comment Article User].freeze
   STATUSES = %w[valid invalid confirmed archived].freeze
 
@@ -34,11 +36,13 @@ class Reaction < ApplicationRecord
   # user they might only see readinglist items that are published.
   # See https://github.com/forem/forem/issues/14796
   scope :readinglist, -> { where(category: "readinglist") }
-  scope :for_articles, ->(ids) { where(reactable_type: "Article", reactable_id: ids) }
+  scope :for_articles, ->(ids) { only_articles.where(reactable_id: ids) }
+  scope :only_articles, -> { where(reactable_type: "Article") }
   scope :eager_load_serialized_data, -> { includes(:reactable, :user) }
   scope :article_vomits, -> { where(category: "vomit", reactable_type: "Article") }
   scope :comment_vomits, -> { where(category: "vomit", reactable_type: "Comment") }
   scope :user_vomits, -> { where(category: "vomit", reactable_type: "User") }
+  scope :valid_or_confirmed, -> { where(status: %w[valid confirmed]) }
   scope :related_negative_reactions_for_user, lambda { |user|
     article_vomits.where(reactable_id: user.article_ids)
       .or(comment_vomits.where(reactable_id: user.comment_ids))
@@ -59,6 +63,7 @@ class Reaction < ApplicationRecord
   before_destroy :update_reactable_without_delay, unless: :destroyed_by_association
   after_commit :async_bust
   after_commit :bust_reactable_cache, :update_reactable, on: %i[create update]
+  after_commit :record_field_test_event, on: %i[create]
 
   class << self
     def count_for_article(id)
@@ -66,7 +71,12 @@ class Reaction < ApplicationRecord
         reactions = Reaction.where(reactable_id: id, reactable_type: "Article")
         counts = reactions.group(:category).count
 
-        %w[like readinglist unicorn].map do |type|
+        reaction_types = %w[like readinglist]
+        unless FeatureFlag.enabled?(:replace_unicorn_with_jump_to_comments)
+          reaction_types << "unicorn"
+        end
+
+        reaction_types.map do |type|
           { category: type, count: counts.fetch(type, 0) }
         end
       end
@@ -82,26 +92,56 @@ class Reaction < ApplicationRecord
     end
 
     # @param user [User] the user who might be spamming the system
+    # @param threshold [Integer] the number of strikes before they are spam
+    # @param include_user_profile [Boolean] do we include the user's profile as part of the "check
+    #        for spamminess"
     #
     # @return [TrueClass] yup, they're spamming the system.
     # @return [FalseClass] they're not (yet) spamming the system
-    def user_has_been_given_too_many_spammy_article_reactions?(user:, threshold: 2)
+    def user_has_been_given_too_many_spammy_article_reactions?(user:, threshold: 2, include_user_profile: false)
+      threshold -= 1 if include_user_profile && user_has_spammy_profile_reaction?(user: user)
       article_vomits.where(reactable_id: user.articles.ids).size > threshold
     end
 
     # @param user [User] the user who might be spamming the system
+    # @param threshold [Integer] the number of strikes before they are spam
+    # @param include_user_profile [Boolean] do we include the user's profile as part of the "check
+    #        for spamminess"
     #
     # @return [TrueClass] yup, they're spamming the system.
     # @return [FalseClass] they're not (yet) spamming the system
-    def user_has_been_given_too_many_spammy_comment_reactions?(user:, threshold: 2)
+    def user_has_been_given_too_many_spammy_comment_reactions?(user:, threshold: 2, include_user_profile: false)
+      threshold -= 1 if include_user_profile && user_has_spammy_profile_reaction?(user: user)
       comment_vomits.where(reactable_id: user.comments.ids).size > threshold
+    end
+
+    # @param user [User] the user who might be spamming the system
+    def user_has_spammy_profile_reaction?(user:)
+      user_vomits.exists?(reactable_id: user.id)
+    end
+
+    # @param category [String] the reaction category type, see the CATEGORIES var
+    # @param reactable_id [Boolean] the ID of the item that was reacted on
+    # @param reactable_type [String] the type of the item, see the REACTABLE_TYPES var
+    # @param user [User] a moderator user
+
+    # @return [Array] Reactions that contain a contradictory category to the category that was passed in,
+    # example, if we pass in a "thumbsup", then we return reactions that have have a thumbsdown or vomit
+    def contradictory_mod_reactions(category:, reactable_id:, reactable_type:, user:)
+      contradictory_category = NEGATIVE_PRIVILEGED_CATEGORIES if category == "thumbsup"
+      contradictory_category = "thumbsup" if category.in?(NEGATIVE_PRIVILEGED_CATEGORIES)
+
+      Reaction.where(reactable_id: reactable_id,
+                     reactable_type: reactable_type,
+                     user: user,
+                     category: contradictory_category)
     end
   end
 
   # no need to send notification if:
   # - reaction is negative
   # - receiver is the same user as the one who reacted
-  # - receive_notification is disabled
+  # - reaction status is marked invalid
   def skip_notification_for?(_receiver)
     reactor_id = case reactable
                  when User
@@ -110,7 +150,7 @@ class Reaction < ApplicationRecord
                    reactable.user_id
                  end
 
-    points.negative? || (user_id == reactor_id)
+    (status == "invalid") || points.negative? || (user_id == reactor_id)
   end
 
   def vomit_on_user?
@@ -126,7 +166,7 @@ class Reaction < ApplicationRecord
   end
 
   def negative?
-    category == "vomit" || category == "thumbsdown"
+    NEGATIVE_PRIVILEGED_CATEGORIES.include?(category)
   end
 
   private
@@ -206,5 +246,19 @@ class Reaction < ApplicationRecord
 
   def new_untrusted_user
     user.registered_at > NEW_USER_RAMPUP_DAYS_COUNT.days.ago && !user.trusted? && !user.any_admin?
+  end
+
+  # @see AbExperiment::GoalConversionHandler
+  def record_field_test_event
+    # TODO: Remove once we know that this test is not over-heating the application.  That would be a
+    # few days after the deploy to DEV of this change.
+    return unless FeatureFlag.accessible?(:field_test_event_for_reactions)
+    return if FieldTest.config["experiments"].nil?
+    return unless PUBLIC_CATEGORIES.include?(category)
+    return unless reactable.is_a?(Article)
+    return unless user_id
+
+    Users::RecordFieldTestEventWorker
+      .perform_async(user_id, AbExperiment::GoalConversionHandler::USER_CREATES_ARTICLE_REACTION_GOAL)
   end
 end

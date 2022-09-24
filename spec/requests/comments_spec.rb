@@ -319,6 +319,18 @@ RSpec.describe "Comments", type: :request do
       }
     end
 
+    context "when a user is coment_suspended" do
+      before do
+        sign_in user
+        user.add_role(:comment_suspended)
+      end
+
+      it "returns not authorized" do
+        post "/comments", params: base_comment_params
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
     context "when part of field test" do
       before do
         sign_in user
@@ -364,7 +376,7 @@ RSpec.describe "Comments", type: :request do
       it "Delete notification when comment is hidden" do
         notification = user.notifications.last
         patch "/comments/#{comment.id}/hide", headers: { HTTP_ACCEPT: "application/json" }
-        expect(Notification.exists?(id: notification.id)).to eq(false)
+        expect(Notification.exists?(id: notification.id)).to be(false)
       end
 
       it "deletes children notification when comment is hidden" do
@@ -375,7 +387,7 @@ RSpec.describe "Comments", type: :request do
                                               headers: { HTTP_ACCEPT: "application/json" }
         child_comment.reload
         expect(child_comment.hidden_by_commentable_user).to be true
-        expect(Notification.exists?(id: notification.id)).to eq(false)
+        expect(Notification.exists?(id: notification.id)).to be(false)
       end
     end
 

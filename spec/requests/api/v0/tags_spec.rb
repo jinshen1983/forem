@@ -21,9 +21,6 @@ RSpec.describe "Api::V0::Tags", type: :request do
       response_tag_with_badge = response.parsed_body.last
       expect_valid_json_body(response_tag, tag)
       expect_valid_json_body(response_tag_with_badge, tag_with_badge)
-
-      expect(response_tag["badge"]["badge_image"]).to be_nil
-      expect(response_tag_with_badge["badge"]["badge_image"]["url"]).to eq(tag_with_badge.badge.badge_image.url)
     end
 
     it "orders tags by taggings_count in a descending order" do
@@ -36,15 +33,6 @@ RSpec.describe "Api::V0::Tags", type: :request do
       expect(response.parsed_body.map { |t| t["id"] }).to eq(expected_result)
     end
 
-    it "finds tags from array of tag_ids" do
-      tags = create_list(:tag, 10, taggings_count: 10)
-      tag_ids = tags.sample(4).map(&:id)
-
-      get api_tags_path, params: { tag_ids: tag_ids }
-
-      expect(response.parsed_body.map { |t| t["id"] }).to match_array(tag_ids)
-    end
-
     it "supports pagination" do
       create_list(:tag, 3)
 
@@ -53,6 +41,17 @@ RSpec.describe "Api::V0::Tags", type: :request do
 
       get api_tags_path, params: { page: 2, per_page: 2 }
       expect(response.parsed_body.length).to eq(1)
+    end
+
+    it "respects API_PER_PAGE_MAX limit set in ENV variable" do
+      allow(ApplicationConfig).to receive(:[]).and_return(nil)
+      allow(ApplicationConfig).to receive(:[]).with("APP_PROTOCOL").and_return("http://")
+      allow(ApplicationConfig).to receive(:[]).with("API_PER_PAGE_MAX").and_return(2)
+
+      create_list(:tag, 3)
+
+      get api_tags_path, params: { per_page: 10 }
+      expect(response.parsed_body.count).to eq(2)
     end
 
     it "sets the correct edge caching surrogate key for all tags" do
@@ -68,13 +67,10 @@ RSpec.describe "Api::V0::Tags", type: :request do
   private
 
   def expect_valid_json_body(body, tag)
-    expect(body.keys).to match_array(%w[id name bg_color_hex text_color_hex short_summary badge])
+    expect(body.keys).to match_array(%w[id name bg_color_hex text_color_hex])
     expect(body["id"]).to eq(tag.id)
     expect(body["name"]).to eq(tag.name)
     expect(body["bg_color_hex"]).to eq(tag.bg_color_hex)
     expect(body["text_color_hex"]).to eq(tag.text_color_hex)
-    expect(body["short_summary"]).to eq(tag.short_summary)
-    expect(body).to have_key("badge")
-    expect(body["badge"]).to have_key("badge_image")
   end
 end

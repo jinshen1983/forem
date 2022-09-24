@@ -1,4 +1,7 @@
-import { toggleFlagUserModal } from '../packs/flagUserModal';
+import { toggleFlagUserModal } from '../packs/toggleUserFlagModal';
+import { toggleSuspendUserModal } from '../packs/toggleUserSuspensionModal';
+import { toggleUnpublishPostModal } from '../packs/unpublishPostModal';
+import { toggleUnpublishAllPostsModal } from '../packs/modals/unpublishAllPosts';
 import { request } from '@utilities/http';
 
 export function addCloseListener() {
@@ -149,38 +152,14 @@ export async function updateExperienceLevel(
   }
 }
 
-const adminUnpublishArticle = async (id, username, slug) => {
-  try {
-    const response = await request(`/articles/${id}/admin_unpublish`, {
-      method: 'PATCH',
-      body: JSON.stringify({ id, username, slug }),
-      credentials: 'same-origin',
-    });
-
-    const outcome = await response.json();
-
-    /* eslint-disable no-restricted-globals */
-    if (outcome.message == 'success') {
-      window.top.location.assign(`${window.location.origin}${outcome.path}`);
-    } else {
-      top.addSnackbarItem({
-        message: `Error: ${outcome.message}`,
-        addCloseButton: true,
-      });
-    }
-  } catch (error) {
-    top.addSnackbarItem({
-      message: `Error: ${error}`,
-      addCloseButton: true,
-    });
-  }
-};
-
 const adminFeatureArticle = async (id, featured) => {
   try {
     const response = await request(`/articles/${id}/admin_featured_toggle`, {
       method: 'PATCH',
-      body: JSON.stringify({ id, article: { featured: featured === 'true' ? 0 : 1 } }),
+      body: JSON.stringify({
+        id,
+        article: { featured: featured === 'true' ? 0 : 1 },
+      }),
       credentials: 'same-origin',
     });
 
@@ -366,7 +345,7 @@ export function addAdjustTagListeners() {
   }
 }
 
-export function addBottomActionsListeners() {
+export function addModActionsListeners() {
   addAdjustTagListeners();
   Array.from(document.getElementsByClassName('other-things-btn')).forEach(
     (btn) => {
@@ -401,41 +380,39 @@ export function addBottomActionsListeners() {
     },
   );
 
-
   const featureArticleBtn = document.getElementById('feature-article-btn');
   if (featureArticleBtn) {
     featureArticleBtn.addEventListener('click', () => {
-      const {
-        articleId: id,
-        articleFeatured: featured,
-      } = featureArticleBtn.dataset;
+      const { articleId: id, articleFeatured: featured } =
+        featureArticleBtn.dataset;
       adminFeatureArticle(id, featured);
     });
   }
 
-  const unpublishArticleBtn = document.getElementById('unpublish-article-btn');
-  if (unpublishArticleBtn) {
-    unpublishArticleBtn.addEventListener('click', () => {
-      const {
-        articleId: id,
-        articleAuthor: username,
-        articleSlug: slug,
-      } = unpublishArticleBtn.dataset;
-
-      if (confirm('You are unpublishing this post; are you sure?')) {
-        adminUnpublishArticle(id, username, slug);
-      }
-    });
-  }
+  document
+    .getElementById('toggle-flag-user-modal')
+    .addEventListener('click', toggleFlagUserModal);
 
   document
-    .getElementById('open-flag-user-modal')
-    .addEventListener('click', toggleFlagUserModal);
+    .getElementById('suspend-user-btn')
+    ?.addEventListener('click', toggleSuspendUserModal);
+
+  document
+    .getElementById('unsuspend-user-btn')
+    ?.addEventListener('click', toggleSuspendUserModal);
+
+  document
+    .getElementById('unpublish-all-posts-btn')
+    ?.addEventListener('click', toggleUnpublishAllPostsModal);
+
+  document
+    .getElementById('unpublish-article-btn')
+    ?.addEventListener('click', toggleUnpublishPostModal);
 }
 
 export function initializeActionsPanel() {
   initializeHeight();
   addCloseListener();
   addReactionButtonListeners();
-  addBottomActionsListeners();
+  addModActionsListeners();
 }

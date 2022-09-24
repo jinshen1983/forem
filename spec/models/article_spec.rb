@@ -21,6 +21,7 @@ RSpec.describe Article, type: :model do
     it { is_expected.to have_one(:discussion_lock).dependent(:delete) }
 
     it { is_expected.to have_many(:comments).dependent(:nullify) }
+    it { is_expected.to have_many(:context_notifications).dependent(:delete_all) }
     it { is_expected.to have_many(:mentions).dependent(:delete_all) }
     it { is_expected.to have_many(:html_variant_successes).dependent(:nullify) }
     it { is_expected.to have_many(:html_variant_trials).dependent(:nullify) }
@@ -155,9 +156,9 @@ RSpec.describe Article, type: :model do
     describe "#main_image_background_hex_color" do
       it "must have true hex for image background" do
         article.main_image_background_hex_color = "hello"
-        expect(article.valid?).to eq(false)
+        expect(article.valid?).to be(false)
         article.main_image_background_hex_color = "#fff000"
-        expect(article.valid?).to eq(true)
+        expect(article.valid?).to be(true)
       end
     end
 
@@ -184,9 +185,9 @@ RSpec.describe Article, type: :model do
     describe "#main_image" do
       it "must have url for main image if present" do
         article.main_image = "hello"
-        expect(article.valid?).to eq(false)
+        expect(article.valid?).to be(false)
         article.main_image = "https://image.com/image.png"
-        expect(article.valid?).to eq(true)
+        expect(article.valid?).to be(true)
       end
     end
 
@@ -195,13 +196,13 @@ RSpec.describe Article, type: :model do
 
       it "does not allow the use of admin-only liquid tags for non-admins" do
         article.body_markdown = "hello hey hey hey {% poll #{poll.id} %}"
-        expect(article.valid?).to eq(false)
+        expect(article.valid?).to be(false)
       end
 
       it "allows admins" do
         article.user.add_role(:admin)
         article.body_markdown = "hello hey hey hey {% poll #{poll.id} %}"
-        expect(article.valid?).to eq(true)
+        expect(article.valid?).to be(true)
       end
     end
 
@@ -222,6 +223,28 @@ RSpec.describe Article, type: :model do
     end
 
     describe "title validation" do
+      it "normalizes the title to a narrow set of allowable characters" do
+        article = create(:article, title: "I⠀⠀Am⠀⠀Warning⠀⠀You⠀⠀Don't⠀⠀Click!")
+
+        expect(article.title).to eq "I Am Warning You Don't Click!"
+      end
+
+      it "allows useful emojis and extended punctuation" do
+        allowed_title = "Hello! Title — Emdash⁉️ 🤖🤯🔥®™©👨‍👩🏾👦‍👦"
+
+        article = create(:article, title: allowed_title)
+
+        expect(article.title).to eq allowed_title
+      end
+
+      it "allows Euro symbol (€)" do
+        allowed_title = "Euro code €€€"
+
+        article = create(:article, title: allowed_title)
+
+        expect(article.title).to eq allowed_title
+      end
+
       it "produces a proper title" do
         test_article = build(:article, title: "An Article Title")
 
@@ -252,7 +275,7 @@ RSpec.describe Article, type: :model do
     describe "tag validation" do
       let(:article) { build(:article, user: user) }
 
-      # See https://github.com/thepracticaldev/dev.to/pull/6302
+      # See https://github.com/forem/forem/pull/6302
       # rubocop:disable RSpec/VerifiedDoubles
       it "does not modify the tag list if there are no adjustments" do
         allow(TagAdjustment).to receive(:where).and_return(TagAdjustment.none)
@@ -353,7 +376,7 @@ RSpec.describe Article, type: :model do
       end
 
       it "parses does not assign canonical_url" do
-        expect(article.canonical_url).to eq(nil)
+        expect(article.canonical_url).to be_nil
       end
 
       it "parses canonical_url if canonical_url is present" do
@@ -395,7 +418,7 @@ RSpec.describe Article, type: :model do
       before { article_without_main_image.validate }
 
       it "can parse the main_image" do
-        expect(article_without_main_image.main_image).to eq(nil)
+        expect(article_without_main_image.main_image).to be_nil
       end
 
       it "can parse the main_image when added" do
@@ -421,7 +444,7 @@ RSpec.describe Article, type: :model do
         article_with_main_image.main_image = nil
         article_with_main_image.validate
 
-        expect(article_with_main_image.main_image).to eq(nil)
+        expect(article_with_main_image.main_image).to be_nil
       end
 
       it "can parse the main_image when changed" do
@@ -455,23 +478,166 @@ RSpec.describe Article, type: :model do
     end
 
     it "sets published_at from a valid frontmatter date" do
-      date = (Date.current - 5.days).strftime("%d/%m/%Y")
+      date = (Date.current + 5.days).strftime("%d/%m/%Y")
       article_with_date = build(:article, with_date: true, date: date, published_at: nil)
       expect(article_with_date.valid?).to be(true)
       expect(article_with_date.published_at.strftime("%d/%m/%Y")).to eq(date)
     end
 
-    it "rejects future dates set from frontmatter" do
-      invalid_article = build(:article, with_date: true, date: Date.tomorrow.strftime("%d/%m/%Y"), published_at: nil)
-      expect(invalid_article.valid?).to be(false)
-      expect(invalid_article.errors[:date_time])
-        .to include("must be entered in DD/MM/YYYY format with current or past date")
+    it "sets future published_at from frontmatter" do
+      published_at = (Date.current + 10.days).strftime("%d/%m/%Y %H:%M")
+      body_markdown = "---\ntitle: Title\npublished: false\npublished_at: #{published_at}\ndescription:\ntags: heytag
+      \n---\n\nHey this is the article"
+      article_with_published_at = build(:article, body_markdown: body_markdown)
+      expect(article_with_published_at.valid?).to be(true)
+      expect(article_with_published_at.published_at.strftime("%d/%m/%Y %H:%M")).to eq(published_at)
     end
 
-    it "rejects future dates even when it's published at" do
-      article.published_at = Date.tomorrow
-      expect(article.valid?).to be(false)
-      expect(article.errors[:date_time]).to include("must be entered in DD/MM/YYYY format with current or past date")
+    it "sets published_at when publishing but no published_at passed from frontmatter" do
+      body_markdown = "---\ntitle: Title\npublished: true\ndescription:\ntags: heytag
+      \n---\n\nHey this is the article"
+      article = create(:article, body_markdown: body_markdown)
+      article.reload
+      expect(article.published_at).to be > 10.minutes.ago
+    end
+
+    it "sets published_at when publishing from draft and no published_at passed from frontmatter" do
+      body_markdown = "---\ntitle: Title\npublished: true\ndescription:\ntags: heytag
+      \n---\n\nHey this is the article"
+      draft = create(:article, published: false, published_at: nil)
+      draft.update(body_markdown: body_markdown)
+      draft.reload
+      expect(draft.published).to be true
+      expect(draft.published_at).to be > 10.minutes.ago
+    end
+
+    it "doesn't allow past published_at when publishing on create" do
+      article2 = build(:article, published_at: 10.days.ago, published: true)
+      expect(article2.valid?).to be false
+      expect(article2.errors[:published_at])
+        .to include("only future or current published_at allowed when publishing an article")
+    end
+
+    it "doesn't allow recent published_at when publishing on create" do
+      article2 = build(:article, published_at: 1.hour.ago, published: true)
+      expect(article2.valid?).to be false
+      expect(article2.errors[:published_at])
+        .to include("only future or current published_at allowed when publishing an article")
+    end
+
+    it "allows recent published_at when publishing on create" do
+      article2 = build(:article, published_at: 5.minutes.ago, published: true)
+      expect(article2.valid?).to be true
+    end
+
+    context "when unpublishing" do
+      let!(:published_at_was) { article.published_at }
+
+      it "keeps published_at" do
+        article.update(published: false)
+        article.reload
+        expect(article.published_at).to be_within(1.second).of(published_at_was)
+      end
+
+      it "keeps published_at if we try to unset it" do
+        article.update(published: false, published_at: nil)
+        article.reload
+        expect(article.published_at).to be_within(1.second).of(published_at_was)
+      end
+
+      it "keeps published_at when unpublising a scheduled article" do
+        scheduled_published_at = 1.day.from_now
+        article.update_columns(published_at: scheduled_published_at)
+        article.update(published: false)
+        article.reload
+        expect(article.published_at).to be_within(1.second).of(scheduled_published_at)
+      end
+    end
+
+    context "when unpublishing a frontmatter article" do
+      let(:published_at) { "2022-05-05 18:00 +0300" }
+      let(:body_markdown) { "---\ntitle: Title\npublished: true\npublished_at: #{published_at}\n---\n\n" }
+      let(:frontmatter_article) do
+        a = create(:article, :past, past_published_at: DateTime.parse(published_at))
+        # if we would set markdown on create, past_published_at would be overriden by body_markdown values
+        # and the validation wouldn't pass
+        a.update_columns(body_markdown: body_markdown)
+        a
+      end
+
+      it "keeps published at" do
+        new_body_markdown = "---\ntitle: Title\npublished: false\n---\n\n"
+        frontmatter_article.update(body_markdown: new_body_markdown)
+        expect(frontmatter_article.published_at).to be_within(1.minute).of(DateTime.parse(published_at))
+      end
+
+      it "keeps published at when trying to set published_at" do
+        new_body_markdown = "---\ntitle: Title\npublished: false\npublished_at:2022-12-05 18:00 +0300---\n\n"
+        frontmatter_article.update(body_markdown: new_body_markdown)
+        expect(frontmatter_article.published_at).to be_within(1.minute).of(DateTime.parse(published_at))
+      end
+
+      it "keeps published_at when unpublishing a scheduled article" do
+        scheduled_time = 1.day.from_now
+        time_str = scheduled_time.strftime("%d/%m/%Y %H:%M %z")
+        scheduled_body_markdown = "---\ntitle: Title\npublished: true\npublished_at: #{time_str}\n---\n\n"
+        frontmatter_scheduled_article = create(:article, body_markdown: scheduled_body_markdown)
+        new_body_markdown = "---\ntitle: Title\npublished: false\npublished_at:2022-12-05 18:00 +0300---\n\n"
+        frontmatter_scheduled_article.update(body_markdown: new_body_markdown)
+        expect(frontmatter_scheduled_article.published_at).to be_within(1.minute).of(scheduled_time)
+      end
+    end
+
+    context "when publishing on update (draft => published)" do
+      # has published_at means that the article was published before (and unpublished later, in this)
+      it "doesn't allow updating published_at if an article has already been published" do
+        article.published_at = (Date.current + 10.days).strftime("%d/%m/%Y %H:%M")
+        expect(article.valid?).to be false
+        expect(article.errors[:published_at])
+          .to include("updating published_at for articles that have already been published is not allowed")
+      end
+
+      it "allows past published_at for published_from_feed articles when publishing on update" do
+        published_at = 10.days.ago
+        article2 = create(:article, published: false, published_at: nil, published_from_feed: true)
+        body_markdown = "---\ntitle: Title\npublished: true\npublished_at: #{published_at.strftime('%d/%m/%Y %H:%M')}
+        \ndescription:\ntags: heytag\n---\n\nHey this is the article"
+        article2.update(body_markdown: body_markdown)
+        expect(article2.published_at).to be_within(1.minute).of(published_at)
+      end
+
+      it "doesn't allow changing published_at for published_from_feed articles that have been published before" do
+        published_at = Time.current
+        published_at_was = 10.days.ago
+        # has published_at means that the article was published before
+        article2 = create(:article, published: false, published_at: published_at_was, published_from_feed: true)
+        body_markdown = "---\ntitle: Title\npublished: true\npublished_at: #{published_at.strftime('%d/%m/%Y %H:%M')}
+        \ndescription:\ntags: heytag\n---\n\nHey this is the article"
+        success = article2.update(body_markdown: body_markdown)
+        expect(success).to be false
+        expect(article2.errors[:published_at]).to include(I18n.t("models.article.immutable_published_at"))
+      end
+    end
+
+    context "when updating a previously published (and unpublished) frontmatter article" do
+      let(:published_at) { "2022-05-05 18:00 +0300" }
+      let(:body_markdown) { "---\ntitle: Title\npublished: false\npublished_at: #{published_at}\n---\n\n" }
+      let(:frontmatter_article) { create(:article, body_markdown: body_markdown) }
+
+      it "doesn't allow updating published_at if specifying published_at" do
+        # expect(frontmatter_article.published_at < 10.days.ago).to be true
+        new_body_markdown = "---\ntitle: Title\npublished: true\npublished_at: 2022-10-05 18:00 +0300\n---\n\n"
+        success = frontmatter_article.update(body_markdown: new_body_markdown)
+        expect(success).to be false
+        expect(frontmatter_article.errors[:published_at]).to include(I18n.t("models.article.immutable_published_at"))
+      end
+
+      it "doesn't allow updating published_at if removing published_at" do
+        new_body_markdown = "---\ntitle: Title\npublished: true\n---\n\n"
+        frontmatter_article.update(body_markdown: new_body_markdown)
+        frontmatter_article.reload
+        expect(frontmatter_article.published_at).to be_within(1.minute).of(DateTime.parse(published_at))
+      end
     end
   end
 
@@ -556,7 +722,7 @@ RSpec.describe Article, type: :model do
 
       it "properly converts underscores and still has a valid slug" do
         underscored_article = build(:article, title: "hey_hey_hey node_modules", published: false)
-        expect(underscored_article.valid?).to eq true
+        expect(underscored_article.valid?).to be true
       end
     end
 
@@ -574,7 +740,7 @@ RSpec.describe Article, type: :model do
 
       it "properly converts underscores and still has a valid slug" do
         underscored_article = build(:article, title: "hey_hey_hey node_modules", published: true)
-        expect(underscored_article.valid?).to eq true
+        expect(underscored_article.valid?).to be true
       end
 
       # rubocop:disable RSpec/NestedGroups
@@ -604,23 +770,23 @@ RSpec.describe Article, type: :model do
     it "returns true if the article has a frontmatter" do
       body = "---\ntitle: Hellohnnnn#{rand(1000)}\npublished: true\ntags: hiring\n---\n\nHello"
       article.body_markdown = body
-      expect(article.has_frontmatter?).to eq(true)
+      expect(article.has_frontmatter?).to be(true)
     end
 
     it "returns false if the article does not have a frontmatter" do
       article.body_markdown = "Hey hey Ho Ho"
-      expect(article.has_frontmatter?).to eq(false)
+      expect(article.has_frontmatter?).to be(false)
     end
 
     it "returns true if parser raises a Psych::DisallowedClass error" do
       allow(FrontMatterParser::Parser).to receive(:new).and_raise(Psych::DisallowedClass.new("msg"))
-      expect(article.has_frontmatter?).to eq(true)
+      expect(article.has_frontmatter?).to be(true)
     end
 
     it "returns true if parser raises a Psych::SyntaxError error" do
       syntax_error = Psych::SyntaxError.new("file", 1, 1, 0, "problem", "context")
       allow(FrontMatterParser::Parser).to receive(:new).and_raise(syntax_error)
-      expect(article.has_frontmatter?).to eq(true)
+      expect(article.has_frontmatter?).to be(true)
     end
   end
 
@@ -638,7 +804,7 @@ RSpec.describe Article, type: :model do
     it "shows year in readable time if not current year" do
       article.edited_at = 1.year.ago
       last_year = 1.year.ago.year % 100
-      expect(article.readable_edit_date.include?("'#{last_year}")).to eq(true)
+      expect(article.readable_edit_date.include?("'#{last_year}")).to be(true)
     end
   end
 
@@ -652,7 +818,7 @@ RSpec.describe Article, type: :model do
     it "shows year in readable time if not current year" do
       article.published_at = 1.year.ago
       last_year = 1.year.ago.year % 100
-      expect(article.readable_publish_date.include?("'#{last_year}")).to eq(true)
+      expect(article.readable_publish_date.include?("'#{last_year}")).to be(true)
     end
   end
 
@@ -726,7 +892,7 @@ RSpec.describe Article, type: :model do
         user: user,
         body_markdown: "---\ntitle: hey\npublished: false\ncover_image: #{Faker::Avatar.image}\n---\nYo",
       )
-      expect(article.main_image_from_frontmatter).to eq(true)
+      expect(article.main_image_from_frontmatter).to be(true)
     end
 
     context "when false" do
@@ -756,15 +922,15 @@ RSpec.describe Article, type: :model do
 
   describe ".active_help" do
     it "returns properly filtered articles under the 'help' tag" do
-      filtered_article = create(:article, user: user, tags: "help",
-                                          published_at: 13.hours.ago, comments_count: 5, score: -3)
+      filtered_article = create(:article, :past, user: user, tags: "help",
+                                                 past_published_at: 13.hours.ago, comments_count: 5, score: -3)
       articles = described_class.active_help
       expect(articles).to include(filtered_article)
     end
 
     it "returns any published articles tagged with 'help' when there are no articles that fit the criteria" do
-      unfiltered_article = create(:article, user: user, tags: "help",
-                                            published_at: 10.hours.ago, comments_count: 8, score: -5)
+      unfiltered_article = create(:article, :past, user: user, tags: "help",
+                                                   past_published_at: 10.hours.ago, comments_count: 8, score: -5)
       articles = described_class.active_help
       expect(articles).to include(unfiltered_article)
     end
@@ -1106,6 +1272,17 @@ RSpec.describe Article, type: :model do
       end
     end
 
+    describe "record field test event" do
+      it "enqueues Users::RecordFieldTestEventWorker" do
+        sidekiq_assert_enqueued_with(
+          job: Users::RecordFieldTestEventWorker,
+          args: [article.user_id, AbExperiment::GoalConversionHandler::USER_PUBLISHES_POST_GOAL],
+        ) do
+          article.save
+        end
+      end
+    end
+
     describe "async score calc" do
       it "enqueues Articles::ScoreCalcWorker if published" do
         sidekiq_assert_enqueued_with(job: Articles::ScoreCalcWorker, args: [article.id]) do
@@ -1117,42 +1294,6 @@ RSpec.describe Article, type: :model do
         article = build(:article, published: false)
         sidekiq_assert_no_enqueued_jobs(only: Articles::ScoreCalcWorker) do
           article.save
-        end
-      end
-    end
-
-    describe "slack messages" do
-      before do
-        # making sure there are no other enqueued jobs from other tests
-        sidekiq_perform_enqueued_jobs(only: Slack::Messengers::Worker)
-      end
-
-      it "queues a slack message to be sent" do
-        sidekiq_assert_enqueued_jobs(1, only: Slack::Messengers::Worker) do
-          article.update(published: true, published_at: Time.current)
-        end
-      end
-
-      it "does not queue a message for an article published more than 30 seconds ago" do
-        Timecop.freeze(Time.current) do
-          sidekiq_assert_no_enqueued_jobs(only: Slack::Messengers::Worker) do
-            article.update(published: true, published_at: 31.seconds.ago)
-          end
-        end
-      end
-
-      it "does not queue a message for a draft article" do
-        sidekiq_assert_no_enqueued_jobs(only: Slack::Messengers::Worker) do
-          article.update(body_markdown: "foobar", published: false)
-        end
-      end
-
-      it "queues a message for a draft article that gets published" do
-        Timecop.freeze(Time.current) do
-          sidekiq_assert_enqueued_with(job: Slack::Messengers::Worker) do
-            article.update_columns(published: false)
-            article.update(published: true, published_at: Time.current)
-          end
         end
       end
     end
@@ -1216,6 +1357,26 @@ RSpec.describe Article, type: :model do
 
       fields = %w[id tag_list published_at processed_html user_id organization_id title path cached_tag_list]
       expect(feed_article.attributes.keys).to match_array(fields)
+    end
+  end
+
+  describe "collection cleanup" do
+    let(:collection) { create(:collection, title: "test series") }
+    let(:article) { create(:article, with_collection: collection) }
+
+    it "destroys the collection if collection is empty" do
+      expect do
+        article.body_markdown.gsub!("series: #{collection.slug}", "")
+        article.save
+      end.to change(Collection, :count).by(-1)
+    end
+
+    it "avoids destroying the collection if the collection has other articles" do
+      expect do
+        create(:article, user: user, with_collection: collection)
+        article.body_markdown.gsub!("series: #{collection.slug}", "")
+        article.save
+      end.not_to change(Collection, :count)
     end
   end
 
@@ -1328,7 +1489,6 @@ RSpec.describe Article, type: :model do
       following_user.follow(user)
 
       expect(article.followers.length).to eq(1)
-      expect(article.followers.first.username).to eq(following_user.username)
     end
   end
 

@@ -173,9 +173,9 @@ RSpec.describe "Registrations", type: :request do
       end
 
       it "auto-populates forem_owner_secret if included in querystring params" do
-        get new_user_registration_path(forem_owner_secret: ENV["FOREM_OWNER_SECRET"])
+        get new_user_registration_path(forem_owner_secret: ENV.fetch("FOREM_OWNER_SECRET", nil))
         expect(response.body).not_to include("New Forem Secret")
-        expect(response.body).to include(ENV["FOREM_OWNER_SECRET"])
+        expect(response.body).to include(ENV.fetch("FOREM_OWNER_SECRET", nil))
       end
 
       it "shows forem_owner_secret field if it's not included in querystring params" do
@@ -238,7 +238,7 @@ RSpec.describe "Registrations", type: :request do
                   password: "PaSSw0rd_yo000",
                   password_confirmation: "PaSSw0rd_yo000" } }
         expect(User.last.registered).to be true
-        expect(User.last.registered_at).not_to be nil
+        expect(User.last.registered_at).not_to be_nil
       end
 
       it "does not create user with password confirmation mismatch" do
@@ -419,7 +419,7 @@ RSpec.describe "Registrations", type: :request do
                       password: "PaSSw0rd_yo000",
                       forem_owner_secret: "not_test",
                       password_confirmation: "PaSSw0rd_yo000" } }
-          expect(User.first).to be nil
+          expect(User.first).to be_nil
         end.to raise_error Pundit::NotAuthorizedError
       end
 
